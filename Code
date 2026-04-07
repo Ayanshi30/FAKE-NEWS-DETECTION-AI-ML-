@@ -1,0 +1,202 @@
+import pandas as pd
+import numpy as np
+import re
+import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import accuracy_score, classification_report, mean_squared_error, mean_absolute_error, r2_score
+
+from tensorflow.keras.models import Sequential # type: ignore
+from tensorflow.keras.layers import Dense, Dropout # type: ignore
+from tensorflow.keras.optimizers import Adam # type: ignore
+
+
+fake = pd.read_csv("Fake.csv")
+real = pd.read_csv("True.csv")
+
+fake.fillna('', inplace=True)
+real.fillna('', inplace=True)
+
+fake['label'] = 0
+real['label'] = 1
+
+data = pd.concat([fake, real], ignore_index=True)
+data = data.sample(frac=1).reset_index(drop=True)
+
+
+def clean_text(text):
+    text = str(text).lower()
+    text = re.sub(r'[^a-z ]', '', text)
+    return text
+
+data['full_text'] = data['title'] + " " + data['text']
+data['clean_text'] = data['full_text'].apply(clean_text)
+
+
+data['title_length'] = data['title'].apply(lambda x: len(str(x).split()))
+data['article_length'] = data['text'].apply(lambda x: len(str(x).split()))
+
+if 'subject' in data.columns:
+    data['subject'] = data['subject'].fillna("Unknown")
+    label_encoder = LabelEncoder()
+    data['subject_encoded'] = label_encoder.fit_transform(data['subject'])
+else:
+    data['subject_encoded'] = 0
+
+
+tfidf = TfidfVectorizer(max_features=3000)
+tfidf_matrix = tfidf.fit_transform(data['clean_text'])
+tfidf_df = pd.DataFrame(tfidf_matrix.toarray()).reset_index(drop=True)
+
+extra_features = data[['title_length', 'article_length', 'subject_encoded']].reset_index(drop=True)
+full_features = pd.concat([tfidf_df, extra_features], axis=1)
+
+full_features.columns = full_features.columns.astype(str)
+
+
+scaler = StandardScaler()
+scaled_features = scaler.fit_transform(full_features)
+
+X = scaled_features
+y = data['label']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+print("\n Logistic Regression:")
+log_model = LogisticRegression(max_iter=1000)
+log_model.fit(X_train, y_train)
+log_preds = log_model.predict(X_test)
+print("Accuracy:", accuracy_score(y_test, log_preds))
+print("Report:\n", classification_report(y_test, log_preds))
+
+
+print("\n K-Nearest Neighbors:")
+knn = KNeighborsClassifier(n_neighbors=5)
+knn.fit(X_train, y_train)
+knn_preds = knn.predict(X_test)
+print("Accuracy:", accuracy_score(y_test, knn_preds))
+print("Report:\n", classification_report(y_test, knn_preds))
+
+
+print("\n Linear Regression (Classification Approximation):")
+lin_reg = LinearRegression()
+lin_reg.fit(X_train, y_train)
+lin_preds = lin_reg.predict(X_test)
+lin_pred_class = np.round(lin_preds)
+
+print(" Mean Absolute Error:", mean_absolute_error(y_test, lin_preds))
+print(“ Mean Squared Error:", mean_squared_error(y_test, lin_preds))
+print(" RMSE:", np.sqrt(mean_squared_error(y_test, lin_preds)))
+print(" R² Score:", r2_score(y_test, lin_preds))
+print(" Accuracy (Rounded):", accuracy_score(y_test, lin_pred_class))
+
+
+print("\n K-Means Clustering:")
+kmeans = KMeans(n_clusters=2, random_state=0)
+kmeans.fit(X)
+print("Cluster Centers Shape:", kmeans.cluster_centers_.shape)
+
+
+model = Sequential()
+model.add(Dense(512, activation='relu', input_shape=(X.shape[1],)))
+model.add(Dropout(0.3))
+model.add(Dense(256, activation='relu'))
+model.add(Dropout(0.3))
+model.add(Dense(1, activation='sigmoid'))
+
+model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
+history = model.fit(X_train, y_train, epochs=5, batch_size=64, validation_split=0.2)
+
+loss, acc = model.evaluate(X_test, y_test)
+print(f"\n Neural Net Accuracy: {acc:.4f}")
+
+nn_preds = (model.predict(X_test) > 0.5).astype(int)
+print("\n Neural Net Classification Report:\n", classification_report(y_test, nn_preds))
+
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+plt.plot(history.history['accuracy'], label='Train')
+plt.plot(history.history['val_accuracy'], label='Val')
+plt.title("NN Accuracy")
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy")
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(history.history['loss'], label='Train')
+plt.plot(history.history['val_loss'], label='Val')
+plt.title("NN Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+y_probs = log_model.predict_proba(X_test)[:, 1]
+plt.figure(figsize=(6, 4))
+plt.hist(y_probs, bins=20, color='skyblue', edgecolor='black')
+plt.title(" Model Confidence Histogram")
+plt.xlabel("Confidence Score (Real News Probability)")
+plt.ylabel("Number of Articles")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+avg_tfidf = np.mean(tfidf_matrix.toarray(), axis=0)
+top_indices = np.argsort(avg_tfidf)[::-1][:20]
+print("\n📝 Top 20 Influential Words in Dataset (by avg TF-IDF):")
+top_words = [tfidf.get_feature_names_out()[i] for i in top_indices]
+for i, word in enumerate(top_words):
+    print(f"{i+1}. {word}")
+
+
+plt.figure(figsize=(5, 4))
+data['label'].value_counts().plot(kind='bar', color=['red', 'green'])
+plt.title("Bar Graph: Count of Fake vs Real News")
+plt.xticks(ticks=[0, 1], labels=['Fake', 'Real'])
+plt.xlabel("News Type")
+plt.ylabel("Number of Articles")
+plt.tight_layout()
+plt.show()
+
+
+if 'date' in data.columns:
+    data['date'] = pd.to_datetime(data['date'], errors='coerce')
+    data = data.dropna(subset=['date'])
+    monthly = data.set_index('date').groupby([pd.Grouper(freq='M'), 'label']).size().unstack()
+    monthly.plot(marker='o', figsize=(10, 5))
+    plt.title("Line Graph: Monthly Article Publishing Trend")
+    plt.xlabel("Date")
+    plt.ylabel("Number of Articles")
+    plt.legend(["Fake", "Real"])
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+colors = data['label'].map({0: 'red', 1: 'green'})
+plt.figure(figsize=(6, 5))
+plt.scatter(data['title_length'], data['article_length'], c=colors, alpha=0.3)
+plt.title("Scatter: Title vs Article Length")
+plt.xlabel("Title Word Count")
+plt.ylabel("Article Word Count")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+if 'subject' in data.columns:
+    plt.figure(figsize=(6, 6))
+    subject_counts = data['subject'].value_counts()
+    plt.pie(subject_counts, labels=subject_counts.index, autopct='%1.1f%%', startangle=90)
+    plt.title("Pie Chart: Articles by Subject")
+    plt.tight_layout()
+    plt.show()
